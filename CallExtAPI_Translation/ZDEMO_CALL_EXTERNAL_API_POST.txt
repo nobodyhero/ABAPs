@@ -1,0 +1,224 @@
+*&---------------------------------------------------------------------*
+*& Report  ZDEMO_CALL_EXTERNAL_API_POST
+*&
+*&---------------------------------------------------------------------*
+*&
+*&
+*&---------------------------------------------------------------------*
+REPORT zdemo_call_external_api_post.
+
+* Data Declarations for http client.
+DATA: lo_http_client   TYPE REF TO if_http_client.
+
+" >>> (Start) Data for Translation API. >>>>>>>>>>>>>>>>>>>>>>>>>
+CONSTANTS: lc_trans_url  TYPE string VALUE 'https://sandbox.api.sap.com/mlfs/api/v2/text/translation',
+           lc_sth_apikey TYPE string VALUE !!! Replace to you API Key of SAP Translation Hub !!!
+           .
+
+PARAMETERS: p_s_lang(2) TYPE c DEFAULT 'en',
+            p_t_lang(2) TYPE c DEFAULT 'ja',
+            p_text      TYPE string DEFAULT 'Hello'
+            .
+" <<< (End) Data for Translation API. <<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+"====================================
+"==== Start of procedure ============
+"====================================
+
+"-----------------------------------------
+"----- STEP1: Creating the HTTP Client ---
+"-----------------------------------------
+" As the connection to the REST server is done via HTTP , you need to create an instance of type CL_HTTP_CLIENT to perform the HTTP communication in ABAP.
+" The created object is the input for the construction of the REST client itself and handles the HTTP communication.
+" There are two options to create an object of type CL_HTTP_CLIENT:
+" > Create by destination: A HTTP destination is pre-created in the SM59 transaction, where the information about the authentication and the service URI for the REST service access is stored.
+"   The factory method CL_HTTP_CLIENT=>CREATE_BY_DESTINATION is used in this case to instantiate the ABAP HTTP object.
+" > Create by URL: All required connection datails are specified on object construction, i.e. without any link to a destination.
+"   The factory method CL_HTTP_CLIENT=>CREATE_BY_URL is used to in this case to instantiate the ABAP HTTP object.
+cl_http_client=>create_by_url(
+EXPORTING
+  url                = lc_trans_url
+  "proxy_host         = "Proxy
+  "proxy_service      = "Port
+  "sap_username       = "Username
+  "sap_client         = "Client
+IMPORTING
+  client             = lo_http_client
+EXCEPTIONS
+  argument_not_found = 1
+  plugin_not_active  = 2
+  internal_error     = 3
+  ).
+
+IF sy-subrc IS NOT INITIAL.
+  "Error Handling
+ENDIF.
+
+" Although following settings seems to be possible, I don't use in this case.
+*lo_http_client->request->set_method( if_http_request=>co_request_method_post ).
+*lo_http_client->authenticate( username = 'MY_SAP_USER' password = 'secret' ).
+*lo_http_client->propertytype_accept_cookie = if_http_client=>co_enabled.
+*lo_http_client->request->set_header_field( name  = if_http_form_fields_sap=>sap_client value = '100' ).
+"lo_http_client->request->set_version( if_http_request=>co_protocol_version_1_0 ).
+
+"---------------------------------------------------------------------------------
+"--- STEP2: Creating and Sending the request to API, then getting the response ---
+"---------------------------------------------------------------------------------
+" Data declaration for the REST client object.
+" The class CL_REST_HTTP_CLIENT implements a REST client for calling REST based web services via HTTP.
+" A correctly parameterized ICF HTTP client is required as constructor parameter to create a CL_REST_HTTP_CLIENT instance.
+" This HTTP client then is used for all HTTP requests.
+DATA: lo_rest_client   TYPE REF TO cl_rest_http_client.
+
+" Old syntax before BASIS 740.
+*CREATE OBJECT lo_rest_client
+*  EXPORTING
+*    io_http_client = lo_http_client.
+
+" New syntax for create object as of BASIS 740.
+lo_rest_client = NEW #( io_http_client = lo_http_client ).
+" Or following new syntax with data declaration.
+"DATA(lo_rest_client) = NEW cl_rest_http_client( io_http_client = lo_http_client ).
+
+
+" Data declaration for creating the request.
+DATA: lo_request TYPE REF TO if_rest_entity,
+      lv_body    TYPE string.
+
+" The request header fields can be set directly on the Client object
+" and a REST entity to store the content is created with the method IF_REST_CLIENT~CREATE_REQUEST_ENTITY.
+" (It was not necessary to write the following statement when just sending the GET request (no body data), it would be necessary to set request attributes like body etc.)
+lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
+
+" Creating the body data for POST request.
+lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
+
+TRANSLATE p_s_lang TO LOWER CASE.
+TRANSLATE p_t_lang TO LOWER CASE.
+TRANSLATE p_text TO LOWER CASE.
+" Body contents in JSON format.
+lv_body = |\{ "sourceLanguage": "{ p_s_lang }", "targetLanguages": [ "{ p_t_lang }"  ], "units": [\{ "key": "ANYTHING", "value": "{ p_text }" \}]\} |.
+lo_request->set_string_data( lv_body ).
+
+" Setting the request header
+lo_rest_client->if_rest_client~set_request_header(
+  EXPORTING
+    iv_name  = 'APIKey'
+    iv_value = lc_sth_apikey
+).
+
+" Sending POST request to API, and getting the resonse.
+" In the case of GET, the method is "if_rest_resource~get( )."
+lo_rest_client->if_rest_resource~post( lo_request ).
+
+"--------------------------------------
+"--- STEP3: Output of response data ---
+"--------------------------------------
+" Data declaration for getting the response from API.
+DATA: lo_response       TYPE REF TO if_rest_entity,
+      lv_http_status    TYPE string,
+      lv_reason         TYPE  string,
+      lv_response       TYPE  string,
+      lv_content_length TYPE  string,
+      lv_location       TYPE  string,
+      lv_content_type   TYPE  string
+      .
+
+* Collecting the response data
+lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
+lv_http_status = lo_response->get_header_field( '~status_code' ).
+lv_reason = lo_response->get_header_field( '~status_reason' ).
+lv_content_length = lo_response->get_header_field( 'content-length' ).
+lv_location = lo_response->get_header_field( 'location' ).
+lv_content_type = lo_response->get_header_field( 'content-type' ).
+lv_response = lo_response->get_string_data( ).
+
+" Output
+WRITE: / 'HTTP Status: ', lv_http_status.
+WRITE: / 'Response: ', lv_response, /.
+
+" Access JSON data to output by the format e.g. 'data-array[1]-rest'.
+PERFORM output_cl_data_access_create.
+
+WRITE: /.
+
+" Access JSON data to output by using structures and intenal tables. (complex one).
+PERFORM output_cl_json_deserialize.
+
+
+*===============================================
+*=== FORMS =====================================
+*===============================================
+
+FORM output_cl_data_access_create.
+
+  " Data declaration for deserialization of JSON.
+  DATA: lr_data TYPE REF TO data,
+        lv_val  TYPE string
+        .
+
+  lr_data = /ui2/cl_json=>generate( json = lv_response ).
+
+  WRITE: / '=== Output by /ui2/cl_data_access=>create ==='.
+
+  IF lv_http_status = 200.
+    " (>= SAP_UI 751) To use /ui2/cl_data_access, it is necessary to implement SAP Note 2526405 "/UI2/CL_JSON Corrections".
+    " The first entry of array is not "0" (Zero), but "1".
+    /ui2/cl_data_access=>create( ir_data = lr_data iv_component = 'units[1]-value')->value( IMPORTING ev_data = lv_val ).
+    WRITE: / 'Source Text: ', lv_val.
+
+    /ui2/cl_data_access=>create( ir_data = lr_data iv_component = 'units[1]-translations[1]-value')->value( IMPORTING ev_data = lv_val ).
+    WRITE: / 'Translated Text', lv_val.
+
+  ELSE.
+    /ui2/cl_data_access=>create( ir_data = lr_data iv_component = 'fault-faultstring')->value( IMPORTING ev_data = lv_val ).
+    WRITE: / 'Error (HTTP status is not 200): ', lv_val.
+  ENDIF.
+
+ENDFORM.
+
+
+FORM output_cl_json_deserialize.
+  ">>> (Start) Data declaration to handle JSON with array >>>>>>>>>>>>>>>
+  TYPES: BEGIN OF lty_translation,
+           language TYPE string,
+           value    TYPE string,
+         END OF lty_translation.
+
+  TYPES ltty_translation TYPE STANDARD TABLE OF lty_translation WITH EMPTY KEY.
+
+  TYPES: BEGIN OF lty_unit,
+           value        TYPE string,
+           key          TYPE string,
+           translations TYPE ltty_translation,
+         END OF lty_unit.
+
+  DATA: BEGIN OF ls_translated_data,
+          units TYPE STANDARD TABLE OF lty_unit,
+        END OF ls_translated_data.
+
+  FIELD-SYMBOLS: <unit>        TYPE lty_unit,
+                 <translation> TYPE lty_translation.
+  "<<< (End) Data declaration to handle JSON with array <<<<<<<<<<<<<<<<
+
+  WRITE: / '=== Output by /ui2/cl_json=>deserialize ==='.
+
+  IF lv_http_status = 200.
+    /ui2/cl_json=>deserialize( EXPORTING json = lv_response
+                                         pretty_name = /ui2/cl_json=>pretty_mode-camel_case
+                               CHANGING data = ls_translated_data ).
+
+    IF ls_translated_data IS NOT INITIAL.
+      LOOP AT ls_translated_data-units ASSIGNING <unit> FROM 0 TO 1.
+        WRITE: / 'Source Text: ', <unit>-value.
+        LOOP AT <unit>-translations ASSIGNING <translation> FROM 0 TO 1.
+          WRITE: / 'Translated Text', <translation>-value.
+        ENDLOOP.
+      ENDLOOP.
+    ENDIF.
+  ELSE.
+    WRITE: / 'Error (HTTP status is not 200)'.
+  ENDIF.
+
+ENDFORM.
